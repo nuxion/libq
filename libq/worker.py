@@ -287,7 +287,6 @@ class AsyncWorker:
             result.error_msg = f"func {payload.func_name} not found"
             return result
         with concurrent.futures.ProcessPoolExecutor() as pool:
-            breakpoint()
             try:
                 _result = await asyncio.wait_for(self.loop.run_in_executor(
                     pool, partial(func, **payload.params)), payload.timeout)

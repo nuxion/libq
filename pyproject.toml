@@ -1,8 +1,11 @@
 [tool.poetry]
 name = "libq"
-version = "0.1.0"
-description = ""
+version = "0.2.0"
+description = "Simple async and sync queue system"
 authors = ["nuxion <nuxion@gmail.com>"]
+homepage = "https://github.com/nuxion/libq"
+repository = "https://github.com/nuxion/libq"
+keywords = ["queue", "redis", "async", "distributed"]
 
 [tool.poetry.dependencies]
 python = "^3.8"
