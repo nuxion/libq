@@ -5,14 +5,13 @@ from typing import Any, Dict
 
 from rich.logging import RichHandler
 
-from streamq.logs import worker_log
-from streamq.worker import AsyncWorker
+from libq.worker import AsyncWorker
 
 LOG_CONFIG: Dict[str, Any] = dict(  # no cov
     version=1,
     disable_existing_loggers=False,
     loggers={
-        "streamq.worker": {"level": "DEBUG", "handlers": ["rich"]},
+        "libq": {"level": "DEBUG", "handlers": ["rich"]},
     },
     handlers={
         "console": {
@@ -38,10 +37,14 @@ LOG_CONFIG: Dict[str, Any] = dict(  # no cov
 )
 
 logging.config.dictConfig(LOG_CONFIG)
-log = logging.getLogger("streamq.worker")
-log.info("[magenta]Hello[/]", extra={"markup": True})
-_queues = sys.argv[1]
-queues = _queues.split(",")
+# log = logging.getLogger("streamq.worker")
+# log.info("[magenta]Hello[/]", extra={"markup": True})
+try:
+    queues = sys.argv[1]
+except IndexError:
+    queues = "default"
+    
+# queues = _queues.split(",")
 
 
 worker = AsyncWorker(queues=queues)

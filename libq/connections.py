@@ -13,10 +13,8 @@ from redis.asyncio.sentinel import Sentinel
 from redis.exceptions import RedisError, WatchError
 
 from libq import defaults
+from libq.logs import logger
 from libq.utils import generate_random
-
-
-logger = logging.getLogger("streamq.redis")
 
 
 class SSLContext(ssl.SSLContext):
@@ -45,12 +43,13 @@ class RedisSettings:
     conn_timeout: int = 1
     conn_retries: int = 5
     conn_retry_delay: int = 1
+    decode_responses: bool = True
 
     sentinel: bool = False
     sentinel_master: str = 'mymaster'
 
     @classmethod
-    def from_dsn(cls, dsn: str) -> 'RedisSettings':
+    def from_dsn(cls, dsn: str, decode_responses=True) -> 'RedisSettings':
         conf = urlparse(dsn)
         assert conf.scheme in {'redis', 'rediss'}, 'invalid DSN scheme'
         return RedisSettings(
@@ -60,33 +59,27 @@ class RedisSettings:
             username=conf.username,
             password=conf.password,
             database=int((conf.path or '0').strip('/')),
+            decode_responses=decode_responses
         )
 
     def __repr__(self) -> str:
         return 'RedisSettings({})'.format(', '.join(f'{k}={v!r}' for k, v in self.__dict__.items()))
 
 
-class StreamRedis(Redis):  # type: ignore[misc]
+class Driver(Redis):  # type: ignore[misc]
     def __init__(self,
                  pool_or_conn: Optional[ConnectionPool] = None,
                  # job_serializer: Optional[Serializer] = None,
                  # job_deserializer: Optional[Deserializer] = None,
-                 default_queue_name: str = defaults.STREAM_NAME,
+                 # default_queue_name: str = defaults.QUEUE_NAME,
                  **kwargs: Any,
                  ) -> None:
         # self.job_serializer = job_serializer
         # self.job_deserializer = job_deserializer
-        self.default_queue_name = default_queue_name
+        # self.default_queue_name = default_queue_name
         if pool_or_conn:
             kwargs['connection_pool'] = pool_or_conn
         super().__init__(**kwargs)
-
-    # async def enqueue(self, func_name: str, data: Dict[str, Any], stream_name=None, execid=None):
-    #     stream = stream_name or self.default_queue_name
-    #     id = execid or generate_random()
-    #     res = await self.xadd(stream, {"func": func_name, "data": json.dumps(data),
-    #                                    "id": id}, "*")
-    #     return id, res
 
 
 async def create_pool(
@@ -95,8 +88,7 @@ async def create_pool(
     retry: int = 0,
     # job_serializer: Optional[Serializer] = None,
     # job_deserializer: Optional[Deserializer] = None,
-    default_queue_name: str = defaults.STREAM_NAME,
-) -> StreamRedis:
+) -> Driver:
     """
     Create a new redis pool, retrying up to ``conn_retries`` times if the connection fails.
     Returns a :class:`arq.connections.ArqRedis` instance, thus allowing job enqueuing.
@@ -109,19 +101,19 @@ async def create_pool(
 
     if settings.sentinel:
 
-        def pool_factory(*args: Any, **kwargs: Any) -> StreamRedis:
+        def pool_factory(*args: Any, **kwargs: Any) -> Driver:
             client = Sentinel(*args, sentinels=settings.host,
                               ssl=settings.ssl, **kwargs)
-            return client.master_for(settings.sentinel_master, redis_class=StreamRedis)
+            return client.master_for(settings.sentinel_master, redis_class=Driver)
 
     else:
         pool_factory = functools.partial(
-            StreamRedis,
+            Driver,
             host=settings.host,
             port=settings.port,
             socket_connect_timeout=settings.conn_timeout,
             ssl=settings.ssl,
-            decode_responses=True,
+            decode_responses=settings.decode_responses,
         )
 
     try:
@@ -130,7 +122,7 @@ async def create_pool(
         )
         # pool.job_serializer = job_serializer
         # pool.job_deserializer = job_deserializer
-        pool.default_queue_name = default_queue_name
+        # pool.default_queue_name = default_queue_name
         await pool.ping()
 
     except (ConnectionError, OSError, RedisError, asyncio.TimeoutError) as e:
@@ -158,5 +150,5 @@ async def create_pool(
         retry=retry + 1,
         # job_serializer=job_serializer,
         # job_deserializer=job_deserializer,
-        default_queue_name=default_queue_name,
+        # default_queue_name=default_queue_name,
     )

@@ -1,7 +1,13 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
+from dataclasses import dataclass
+import orjson
 from pydantic import BaseModel
+
+
+def orjson_dumps(v, *, default):
+    return orjson.dumps(v, default=default).decode()
 
 
 class Prefixes(Enum):
@@ -17,9 +23,9 @@ class Prefixes(Enum):
     queue_complete = "sq:q:complete::"
     queue_workers = "sq:q:workers::"
     queues_list = "sq:q:queues"
+    queues_commands = "sq:q:cmd::"
     worker = "sq:w::"
     workers_list = "sq:workers"
-    worker_commands = "sq:w:cmd::"
 
 
 class JobStatus(Enum):
@@ -42,6 +48,10 @@ class JobResult(BaseModel):
     started_ts: Optional[float] = None
     func_result: Optional[Dict[str, Any]] = None
 
+    class Config:
+        json_loads = orjson.loads
+        json_dumps = orjson_dumps
+
 
 class JobPayload(BaseModel):
     func_name: str
@@ -57,6 +67,10 @@ class JobPayload(BaseModel):
     started_ts: Optional[float] = None
     job_result: Optional[JobResult] = None
 
+    class Config:
+        json_loads = orjson.loads
+        json_dumps = orjson_dumps
+
 
 class JobRef(BaseModel):
     execid: str
@@ -70,3 +84,27 @@ class WorkerInfo(BaseModel):
     completed: int
     failed: int
     running: int
+
+
+class Command(BaseModel):
+    key: str
+    action: str
+    public: str
+
+
+class PubSubMsg(BaseModel):
+    type: str
+    pattern: Any
+    channel: str
+    data: str
+
+
+@dataclass
+class FunctionResult:
+    error: bool
+    error_msg: Optional[str] = None
+    func_result: Optional[Dict[str, Any]] = None
+
+    def json(self) -> str:
+        return orjson.dumps(dict(error=self.error, error_msg=self.error_msg,
+                                 func_result=self.func_result))

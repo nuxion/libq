@@ -14,8 +14,10 @@ class Job:
 
     def __init__(self, id: str, *, conn: Redis, payload=None):
         self._id = id
-        self._conn = conn
+        self.conn = conn
         self._status: int = JobStatus.not_found.value
+        if payload:
+            self._status = payload.status
         self._payload: JobPayload = payload
 
     @property
@@ -45,8 +47,15 @@ class Job:
             success = True
         return success
 
+    @property
+    def failed(self) -> Union[bool, None]:
+        failed = None
+        if self._status == JobStatus.failed.value:
+            failed = True
+        return failed
+
     async def fetch(self) -> JobPayload:
-        rsp = await self._conn.get(self.execid)
+        rsp = await self.conn.get(self.execid)
         if not rsp:
             raise errors.JobNotFound(self._id)
 
@@ -57,9 +66,9 @@ class Job:
 
     async def update(self, ttl=None):
         _ttl = self._payload.timeout or ttl
-        await self._conn.setex(f"{Prefixes.job.value}{self._id}",
-                               _ttl,
-                               self._payload.json())
+        await self.conn.setex(f"{Prefixes.job.value}{self._id}",
+                              _ttl,
+                              self._payload.json())
 
     async def mark_complete(self, result: Optional[Dict[str, Any]] = None):
         self.status = JobStatus.complete.value

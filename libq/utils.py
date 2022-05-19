@@ -2,6 +2,7 @@ import asyncio
 import numbers
 from importlib import import_module
 from typing import AsyncGenerator, Callable, Union
+from datetime import datetime
 
 from nanoid import generate
 
@@ -11,6 +12,27 @@ from libq.errors import TimeoutFormatError
 def generate_random(size=10):
 
     return generate(size=size)
+
+
+def now_secs() -> float:
+    """ gives the utc now times in timestamp format """
+    return datetime.utcnow().timestamp()
+
+
+def now_iso() -> str:
+    """ gives the utc now times in isoformat format """
+    return datetime.utcnow().isoformat()
+
+
+def elapsed_from(dt: Union[str, float], *, now=now_secs()) -> float:
+    """ measure the difference from a isoformat date or a timestamp """
+    if isinstance(dt, str):
+        _dt = datetime.fromisoformat(dt).timestamp()
+    elif isinstance(dt, float):
+        _dt = dt
+    else:
+        raise TypeError("Invalid date format nor iso nor timestamp")
+    return _dt - now
 
 
 def parse_timeout(timeout) -> Union[int, None]:

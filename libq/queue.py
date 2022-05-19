@@ -2,9 +2,8 @@ import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Union
 
-from redis.asyncio import ConnectionPool, Redis
-
-from libq import defaults, errors
+from libq import defaults, errors, serializers
+from libq.connections import Driver, create_pool
 from libq.jobs import Job
 from libq.types import JobPayload, JobRef, JobStatus, Prefixes
 from libq.utils import generate_random, parse_timeout
@@ -14,14 +13,14 @@ from libq.worker import AsyncWorker
 class Queue:
 
     def __init__(self, name: str, *,
+                 conn: Optional[Driver] = None,
                  default_timeout=None,
-                 conn: Redis = None,
                  queue_wait_ttl=None,
                  is_async=True):
         self._name = name
         self._default_timeout = parse_timeout(
             default_timeout) or defaults.QUEUE_TIMEOUT
-        self.conn = conn or Redis(decode_responses=True)
+        self.conn = conn
         self._queue_wait_ttl = defaults.QUEUE_WAIT_TTL
         self._is_async = is_async
 
@@ -29,6 +28,16 @@ class Queue:
     def name(self) -> str:
         _prefix = Prefixes.queue_jobs.value
         return f"{_prefix}{self._name}"
+
+    async def _send_job(self, id: str, payload: JobPayload):
+        async with self.conn.pipeline() as pipe:
+            pipe.sadd(Prefixes.queues_list.value, self.name)
+            pipe.setex(f"{Prefixes.job.value}{id}",
+                       self._queue_wait_ttl, payload.json())
+            # pipe.hset(f"{self.q_info}", mapping={"last_job": enqueued})
+            pipe.rpush(self.name, id)
+            result = await pipe.execute()
+        return result
 
     async def enqueue(self,
                       func_name, *,
@@ -55,13 +64,7 @@ class Queue:
             enqueued_ts=_now,
             queue=self._name
         )
-        async with self.conn.pipeline() as pipe:
-            pipe.sadd(Prefixes.queues_list.value, self.name)
-            pipe.setex(f"{Prefixes.job.value}{id}",
-                       self._queue_wait_ttl, payload.json())
-            # pipe.hset(f"{self.q_info}", mapping={"last_job": enqueued})
-            pipe.rpush(self.name, id)
-            result = await pipe.execute()
+        await self._send_job(id, payload)
 
         return Job(id, conn=self.conn, payload=payload)
 
@@ -74,5 +77,12 @@ class Queue:
             f"{Prefixes.queue_workers.value}{self._name}")
         return workers
 
+    async def send_command(self, cmd: str, *, key=None, public: str = "all"):
+        key = key or generate_random()
+        channel = f"{Prefixes.queues_commands.value}{self._name}"
+        msg = serializers.command_serializer(cmd, key=key, public=public)
+        await self.conn.publish(channel, msg)
+        return key
+
     def get_worker(self, worker_id) -> AsyncWorker:
-        return AsyncWorker([self._name], conn=self.conn, id=worker_id)
+        return AsyncWorker(self._name, conn=self.conn, id=worker_id)
