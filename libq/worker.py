@@ -64,7 +64,8 @@ class AsyncWorker:
                  poll_delay_secs=None,
                  poll_strategy="blocking",
                  handle_signals: bool = True,
-                 scheduler: Optional[Scheduler]
+                 scheduler: Optional[Scheduler] = None,
+                 metadata: Optional[Dict[str, Any]] = None
                  ):
         """
         Async worker
@@ -76,7 +77,9 @@ class AsyncWorker:
         :param max_jobs: how many jobs running concurrently
         :param heartbeat_secs: how often notify to redis that we are alive
         :param poll_delay_secs: how much will be waiting for messages from redis
-        :param poll_strategy: there are two options; blocking a iteration. 
+        :param poll_strategy: there are two options; blocking a iteration.
+        :param scheduler: For interval and cron like tasks
+        :param metadata: extra fields to register with the worker
 
         """
 
@@ -110,6 +113,7 @@ class AsyncWorker:
         self._completed = 0
         self._failed = 0
         self._running = 0
+        self._metadata = metadata
         self.scheduler = scheduler
 
     async def info(self) -> Union[types.WorkerInfo, None]:
@@ -138,7 +142,8 @@ class AsyncWorker:
             running=self._running,
             completed=self._completed,
             failed=self._failed,
-            tasks_names=list(self.tasks.keys())
+            tasks_names=list(self.tasks.keys()),
+            metadata=self._metadata
         )
         async with self.conn.pipeline() as pipe:
             pipe.setex(f"{types.Prefixes.worker.value}{self.id}", self.heartbeat_refresh + 50,

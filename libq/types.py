@@ -108,6 +108,7 @@ class WorkerInfo(BaseModel):
     failed: int
     running: int
     tasks_names: List[str]
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class Command(BaseModel):
