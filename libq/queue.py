@@ -96,7 +96,6 @@ class Queue:
 
     async def get_failed(self, id: str) -> Union[JobPayload, JobGenericFail]:
         data = await self.conn.hget(f"{Prefixes.queue_failed.value}{self._name}", id)
-        breakpoint()
         try:
             obj = serializers.job_deserializer(data)
         except ValidationError:

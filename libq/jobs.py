@@ -162,6 +162,9 @@ class Job:
         status = JobStatus.created.value
         if interval:
             sche = JobSchedule(interval=interval, repeat=repeat)
+        elif cron:
+            sche = JobSchedule(cron=cron, repeat=repeat)
+
         job = JobPayload(
             func_name=func_name,
             params=_params,

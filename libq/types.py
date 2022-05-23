@@ -88,6 +88,7 @@ class JobPayload(BaseModel):
     started_ts: Optional[float] = None
     job_result: Optional[JobResult] = None
     schedule: Optional[JobSchedule] = None
+    meta: Optional[Dict[str, Any]] = None
 
     class Config:
         json_loads = orjson.loads

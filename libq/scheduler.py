@@ -3,6 +3,7 @@ from datetime import timedelta
 from time import time
 from typing import List, Optional
 
+from croniter import croniter
 from redis.asyncio import ConnectionPool
 
 from libq import defaults, types
@@ -20,6 +21,11 @@ class Scheduler:
                  partition=None,
                  expire_lock=10,
                  interval=30):
+        """
+        A Scheduler that has interval and cron syntax for scheduling jobs
+        It only stores the job reference, and it needs a Store based on the
+        JobStoreSpec to get the real payload to enqueue the job.
+        """
         self.conn: ConnectionPool = conn or create_pool()
         self.partition = partition or defaults.SCHEDULER_PARTITION
         self._expire_lock = expire_lock
@@ -87,20 +93,38 @@ class Scheduler:
             await pipe.execute()
 
     async def enqueue_job(self, jobid: str):
-        # self.store.get(jobid=)
+        """
+        Put the jobid into a sorted set.
+        For now it uses the original jobid to enqueue the task
+        this implies that if the same job is already running it will not
+        be scheduled.
+        """
         job = await self.store.get(jobid=jobid)
         schedule: types.JobSchedule = job.schedule
         if schedule:
             do_the_job = await self._check_repeat(jobid, schedule.repeat)
             if schedule.interval and do_the_job:
                 q = Queue(job.queue, conn=self.conn)
-                execid = generate_random()
-                logger.info(f"Enqueing job {jobid} with execid {execid}")
-                await q.send_job(execid, payload=job)
+                # execid = generate_random()
+                logger.info(f"Enqueing job {jobid}")
+                await q.send_job(jobid, payload=job)
                 next_run = now_dt() + timedelta(seconds=job.schedule.interval)
                 await self.conn.zadd(self.jobs_key, {jobid: to_unix(next_run)})
+            elif schedule.cron and do_the_job:
+                q = Queue(job.queue, conn=self.conn)
+                # execid = generate_random()
+                logger.info(f"Enqueing job {jobid}")
+                await q.send_job(jobid, payload=job)
+                iter_ = croniter(schedule.cron, now_dt())
+                next_run = iter_.get_next()
+                await self.conn.zadd(self.jobs_key, {jobid: next_run})
+
             else:
                 await self.remove_job(jobid)
+                logger.info(f"Jobid {jobid} removed")
+        else:
+            await self.remove_job(jobid)
+            logger.info(f"Jobid {jobid} removed")
 
     async def get_enqueued(self):
         return await self.conn.zrange(self.jobs_key, 0, -1)

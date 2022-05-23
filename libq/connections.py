@@ -182,3 +182,9 @@ def create_pool(
         db=settings.database, username=settings.username, password=settings.password, encoding='utf8'
     )
     return pool
+
+
+def create_pool_dsn(url, decode_responses=True) -> Redis:
+    settings = RedisSettings.from_dsn(url, decode_responses)
+    conn = create_pool(settings)
+    return conn
