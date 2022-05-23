@@ -6,6 +6,8 @@ from typing import Any, Dict
 from rich.logging import RichHandler
 
 from libq.worker import AsyncWorker
+from libq.scheduler import Scheduler
+from libq.job_store import RedisJobStore
 
 LOG_CONFIG: Dict[str, Any] = dict(  # no cov
     version=1,
@@ -36,6 +38,7 @@ LOG_CONFIG: Dict[str, Any] = dict(  # no cov
     },
 )
 
+
 logging.config.dictConfig(LOG_CONFIG)
 # log = logging.getLogger("streamq.worker")
 # log.info("[magenta]Hello[/]", extra={"markup": True})
@@ -43,9 +46,9 @@ try:
     queues = sys.argv[1]
 except IndexError:
     queues = "default"
-    
 # queues = _queues.split(",")
 
-
-worker = AsyncWorker(queues=queues)
+store = RedisJobStore()
+scheduler = Scheduler(store)
+worker = AsyncWorker(queues=queues, scheduler=scheduler)
 worker.run()

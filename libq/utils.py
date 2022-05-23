@@ -1,8 +1,9 @@
 import asyncio
+import calendar
 import numbers
+from datetime import datetime
 from importlib import import_module
 from typing import AsyncGenerator, Callable, Union
-from datetime import datetime
 
 from nanoid import generate
 
@@ -24,15 +25,30 @@ def now_iso() -> str:
     return datetime.utcnow().isoformat()
 
 
-def elapsed_from(dt: Union[str, float], *, now=now_secs()) -> float:
+def now_dt() -> datetime:
+    return datetime.utcnow()
+
+
+def elapsed_from(dt: Union[str, float], *, now=None) -> float:
     """ measure the difference from a isoformat date or a timestamp """
+    now = now or now_secs()
     if isinstance(dt, str):
         _dt = datetime.fromisoformat(dt).timestamp()
     elif isinstance(dt, float):
         _dt = dt
     else:
         raise TypeError("Invalid date format nor iso nor timestamp")
-    return _dt - now
+    return now - _dt
+
+
+def from_unix(string) -> datetime:
+    """Convert a unix timestamp into a utc datetime"""
+    return datetime.utcfromtimestamp(float(string))
+
+
+def to_unix(dt: datetime):
+    """Converts a datetime object to unixtime"""
+    return calendar.timegm(dt.utctimetuple())
 
 
 def parse_timeout(timeout) -> Union[int, None]:

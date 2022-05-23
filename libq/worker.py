@@ -6,15 +6,17 @@ from copy import deepcopy
 from dataclasses import asdict
 from functools import partial
 from signal import Signals
-from typing import Any, Callable, Coroutine, Dict, List, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Union
 
-# from redis.asyncio import ConnectionPool, Redis
+import orjson
+from redis.asyncio import ConnectionPool
 from redis.exceptions import ResponseError, WatchError
 
 from libq import defaults, errors, serializers, types
-from libq.connections import Driver, create_pool
+from libq.connections import create_pool
 from libq.jobs import Job
 from libq.logs import logger
+from libq.scheduler import Scheduler
 from libq.utils import (
     elapsed_from,
     generate_random,
@@ -26,18 +28,43 @@ from libq.utils import (
 )
 
 
+class Workers:
+    def __init__(self, conn=None):
+        self.conn: ConnectionPool = conn or create_pool()
+
+    async def list(self, queue: Optional[str] = None) -> List[str]:
+        key = types.Prefixes.workers_list.value
+        if queue:
+            key = f"{types.Prefixes.queue_workers.value}{queue}"
+
+        workers = await self.conn.sinter(key)
+        if not workers:
+            return []
+        return list(workers)
+
+    async def get_info(self, worker_id) -> Union[types.WorkerInfo, None]:
+        id = f"{types.Prefixes.worker.value}{worker_id}"
+        data = await self.conn.get(id)
+        if not data:
+            return None
+        obj = serializers.dict_deserializer(data)
+        info = types.WorkerInfo(**obj)
+        return info
+
+
 class AsyncWorker:
 
-    def __init__(self, queues: str,
+    def __init__(self, queues: str = defaults.QUEUE_NAME,
                  *,
                  conn=None,
                  id=None,
-                 ctx=Optional[Dict[str, Any]],
+                 ctx: Optional[Dict[str, Any]] = None,
                  max_jobs=defaults.WORKER_MAX_JOBS,
                  heartbeat_secs=defaults.WORKER_HEARTBEAT_REFRESH,
                  poll_delay_secs=None,
                  poll_strategy="blocking",
                  handle_signals: bool = True,
+                 scheduler: Optional[Scheduler]
                  ):
         """
         Async worker
@@ -53,7 +80,7 @@ class AsyncWorker:
 
         """
 
-        self.conn: Driver = conn
+        self.conn: ConnectionPool = conn or create_pool()
         self.id = id or generate_random()
         self.loop = asyncio.get_event_loop()
         self.ctx = ctx or {}
@@ -82,6 +109,13 @@ class AsyncWorker:
 
         self._completed = 0
         self._failed = 0
+        self._running = 0
+        self.scheduler = scheduler
+
+    async def info(self) -> Union[types.WorkerInfo, None]:
+        wm = Workers(self.conn)
+        obj = await wm.get_info(self.id)
+        return obj
 
     def create_task(self, key: str, func: Coroutine):
         """ creates an async task into the loop """
@@ -94,13 +128,17 @@ class AsyncWorker:
 
     async def register(self):
         """ Self Register, used in the heartbeat cycle """
+        # self._running = self._max_jobs - self.sem._value
+        self._running = len(self.tasks)
         info = types.WorkerInfo(
             id=self.id,
             birthday=self.birthday,
+            last_job=self.last_job,
             queues=self._queues,
-            running=self.sem._value,
+            running=self._running,
             completed=self._completed,
             failed=self._failed,
+            tasks_names=list(self.tasks.keys())
         )
         async with self.conn.pipeline() as pipe:
             pipe.setex(f"{types.Prefixes.worker.value}{self.id}", self.heartbeat_refresh + 50,
@@ -155,31 +193,23 @@ class AsyncWorker:
                     else:
                         logger.warning("Command not supported")
 
-                    # self.create_task(cmd.key, self.run_cmd(cmd))
-        # key = f"{types.Prefixes.worker_commands.value}{self.id}"
-        # async for _ in poll(self.heartbeat_refresh + 2):
-        #     cmd = await self.conn.lpop(key, 1)
-        #     if cmd:
-        #         logger.debug(f"===> cmd: {cmd}")
-        #         if cmd[0] == "shutdown":
-        #             self.handle_sig(Signals.SIGINT)
-        #             continue
-
     async def main(self):
-        if not self.conn:
-            self.conn = await create_pool()
 
         self.sub = self.conn.pubsub()
         logger.info(f"Starting worker {self.id}")
-        logger.debug(f"Queues to listen {self.queues}")
+        logger.info(f"Queues to listen {self.queues}")
         self.create_task("heartbeat", self.heartbeat())
         self.create_task("commands", self.commands())
+        if self.scheduler:
+            self.create_task("scheduler", self.scheduler.run())
 
         if self.poll_strategy == "blocking":
             while True:
+                logger.debug(f"Waiting new jobs for {self.poll_delay_s} secs")
                 await self._poll_blocking()
         else:
             async for _ in poll(self.poll_delay_s):  # noqa F841
+                logger.debug(f"Waiting new jobs for {self.poll_delay_s} secs")
                 await self._poll_iteration()
 
         logger.debug("Finished main %s", self.id)
@@ -189,8 +219,9 @@ class AsyncWorker:
         but it only recieves one message. """
         keys = deepcopy(self.queues)
         random.shuffle(keys)
+
+        logger.debug(f"Running right now {self._running}")
         async with self.sem:
-            logger.debug(f"Waiting new jobs for {self.poll_delay_s} secs")
             task = await self.conn.blpop(keys, self.poll_delay_s)
             if task:
                 logger.debug(
@@ -214,6 +245,7 @@ class AsyncWorker:
     async def _poll_iteration(self):
         q = random.choice(self.queues)
         async with self.sem:
+            logger.debug(f"Waiting new jobs for {self.poll_delay_s} secs")
             count = self._max_jobs - self.sem._value
             tasks = await self.conn.lpop(q, count)
         if tasks:
@@ -229,8 +261,15 @@ class AsyncWorker:
                 del self.tasks[job_id]
                 t.result()
 
-    async def start_job(self, job_id: str, qname: str):
+    def _in_progress_key(self, job_id: str) -> str:
+        return types.Prefixes.job_in_progress.value + job_id
+
+    async def unlock_job(self, job_id):
         in_progress_key = types.Prefixes.job_in_progress.value + job_id
+        await self.conn.delete(in_progress_key)
+
+    async def start_job(self, job_id: str, qname: str):
+        in_progress_key = self._in_progress_key(job_id)
         await self.sem.acquire()
         async with self.conn.pipeline(transaction=True) as pipe:
             await pipe.watch(in_progress_key)
@@ -250,6 +289,7 @@ class AsyncWorker:
                 else:
                     t = self.loop.create_task(self.run_job(job_id, qname))
                     t.add_done_callback(lambda _: self.sem.release())
+                    # t.add_done_callback(self.)
                     self.tasks[job_id] = t
 
     async def start_jobs(self, job_ids: List[str], qname: str):
@@ -299,33 +339,57 @@ class AsyncWorker:
 
     async def run_job(self, job_id: str, qname: str):
         start_ms = now_secs()
-        logger.debug("Getting jobid %s from q %s", job_id, qname)
-        job = Job(job_id, conn=self.conn)
-        payload = await job.fetch()
+        logger.debug("Getting jobid %s", job_id)
         try:
+            job = Job(job_id, conn=self.conn)
+            payload = await job.fetch()
             await job.mark_running()
             payload.started_ts = start_ms
-            logger.debug(f"Doing {job_id}/{payload.func_name}")
+            logger.debug(
+                f"Doing {job_id}/{payload.func_name} "
+                f"from queue {payload.queue}")
             if payload.background:
                 result = await self.call_func_bg(payload)
             else:
                 result = await self.call_func(payload)
             if not result.error:
                 await job.mark_complete(result.func_result)
-                logger.debug(f"Completed {job_id}/{payload.func_name}")
-                self._completed += 1
+                await self._set_job_completed(job_id, qname=payload.queue)
             else:
-                await job.mark_failed(asdict(result))
-                self._failed += 1
-                await self.conn.sadd(f"{types.Prefixes.queue_failed.value}{qname}", job_id)
+                rsp = await job.mark_retry()
+                if rsp:
+                    await self._set_retry_job(job_id, qname=payload.queue)
+                else:
+                    await job.mark_failed(asdict(result))
+                    await self._set_job_failed(job_id, qname=payload.queue,
+                                               payload=payload)
         except Exception as e:
-            # last catch if something faild
-            await job.mark_failed({"error": str(e)})
-            self._failed += 1
-            await self.conn.sadd(f"{types.Prefixes.queue_failed.value}{qname}", job_id)
+            # last catch if something fails
+            payload = types.JobGenericFail(execid=job_id, error=str(e))
 
-        in_progress_key = types.Prefixes.job_in_progress.value + job_id
-        await self.conn.delete(in_progress_key)
+            await self._set_job_failed(job_id, qname=qname, payload=payload)
+
+    async def _set_job_failed(self, job_id: str, *,
+                              qname: str,
+                              payload: Union[types.JobPayload, types.JobGenericFail]):
+
+        data = payload.json()
+
+        logger.error(f"Job {job_id} failed in queue {qname}")
+        self._failed += 1
+        await self.conn.hset(f"{types.Prefixes.queue_failed.value}{qname}",
+                             mapping={job_id: data})
+        await self.unlock_job(job_id)
+
+    async def _set_job_completed(self, job_id: str, *,  qname: str):
+        logger.debug(f"Completed {job_id} in queue {qname}")
+        self._completed += 1
+        await self.unlock_job(job_id)
+
+    async def _set_retry_job(self, job_id: str, *, qname: str):
+        await self.unlock_job(job_id)
+        queue = f"{types.Prefixes.queue_jobs.value}{qname}"
+        await self.conn.lpush(queue, job_id)
 
     def run(self):
         """

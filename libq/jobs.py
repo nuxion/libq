@@ -6,8 +6,9 @@ from typing import Any, Dict, Optional, Union
 from redis.asyncio import ConnectionPool, Redis
 
 from libq import defaults, errors
-from libq.types import JobPayload, JobRef, JobResult, JobStatus, Prefixes
-from libq.utils import poll
+from libq.logs import logger
+from libq.types import JobPayload, JobRef, JobResult, JobSchedule, JobStatus, Prefixes
+from libq.utils import now_secs, poll
 
 
 class Job:
@@ -110,6 +111,18 @@ class Job:
 
         await self.update()
 
+    async def mark_retry(self) -> bool:
+        retries = self._payload.retries
+        max_retries = self._payload.max_retry
+        logger.debug(
+            f"Retry #{retries + 1} of {max_retries } for {self.execid}")
+        if retries < max_retries - 1:
+            self._payload.retries += 1
+            self.status = JobStatus.retrying.value
+            await self.update()
+            return True
+        return False
+
     async def mark_canceled(self):
         self.status = JobStatus.canceled.value
         await self.update()
@@ -132,3 +145,30 @@ class Job:
                 raise asyncio.TimeoutError()
 
         return None
+
+    @staticmethod
+    def create_payload(func_name: str, *,
+                       params=None,
+                       queue=defaults.QUEUE_NAME,
+                       timeout=defaults.JOB_TIMEOUT,
+                       background=False,
+                       interval=None,
+                       cron=None,
+                       repeat=None,
+                       ) -> JobPayload:
+        _params = params or {}
+        created_ts = int(now_secs())
+        sche = None
+        status = JobStatus.created.value
+        if interval:
+            sche = JobSchedule(interval=interval, repeat=repeat)
+        job = JobPayload(
+            func_name=func_name,
+            params=_params,
+            queue=queue,
+            status=status,
+            created_ts=created_ts,
+            timeout=timeout,
+            schedule=sche
+        )
+        return job

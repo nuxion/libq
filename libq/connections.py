@@ -66,29 +66,27 @@ class RedisSettings:
         return 'RedisSettings({})'.format(', '.join(f'{k}={v!r}' for k, v in self.__dict__.items()))
 
 
-class Driver(Redis):  # type: ignore[misc]
-    def __init__(self,
-                 pool_or_conn: Optional[ConnectionPool] = None,
-                 # job_serializer: Optional[Serializer] = None,
-                 # job_deserializer: Optional[Deserializer] = None,
-                 # default_queue_name: str = defaults.QUEUE_NAME,
-                 **kwargs: Any,
-                 ) -> None:
-        # self.job_serializer = job_serializer
-        # self.job_deserializer = job_deserializer
-        # self.default_queue_name = default_queue_name
-        if pool_or_conn:
-            kwargs['connection_pool'] = pool_or_conn
-        super().__init__(**kwargs)
+# class Driver(Redis):  # type: ignore[misc]
+#     def __init__(self,
+#                  pool_or_conn: Optional[ConnectionPool] = None,
+#                  # job_serializer: Optional[Serializer] = None,
+#                  # job_deserializer: Optional[Deserializer] = None,
+#                  # default_queue_name: str = defaults.QUEUE_NAME,
+#                  **kwargs: Any,
+#                  ) -> None:
+#         # self.job_serializer = job_serializer
+#         # self.job_deserializer = job_deserializer
+#         # self.default_queue_name = default_queue_name
+#         if pool_or_conn:
+#             kwargs['connection_pool'] = pool_or_conn
+#         super().__init__(**kwargs)
 
 
-async def create_pool(
+async def create_pool_ping(
     settings_: RedisSettings = None,
     *,
     retry: int = 0,
-    # job_serializer: Optional[Serializer] = None,
-    # job_deserializer: Optional[Deserializer] = None,
-) -> Driver:
+) -> Redis:
     """
     Create a new redis pool, retrying up to ``conn_retries`` times if the connection fails.
     Returns a :class:`arq.connections.ArqRedis` instance, thus allowing job enqueuing.
@@ -101,14 +99,14 @@ async def create_pool(
 
     if settings.sentinel:
 
-        def pool_factory(*args: Any, **kwargs: Any) -> Driver:
+        def pool_factory(*args: Any, **kwargs: Any) -> Redis:
             client = Sentinel(*args, sentinels=settings.host,
                               ssl=settings.ssl, **kwargs)
-            return client.master_for(settings.sentinel_master, redis_class=Driver)
+            return client.master_for(settings.sentinel_master)
 
     else:
         pool_factory = functools.partial(
-            Driver,
+            Redis,
             host=settings.host,
             port=settings.port,
             socket_connect_timeout=settings.conn_timeout,
@@ -120,9 +118,6 @@ async def create_pool(
         pool = pool_factory(
             db=settings.database, username=settings.username, password=settings.password, encoding='utf8'
         )
-        # pool.job_serializer = job_serializer
-        # pool.job_deserializer = job_deserializer
-        # pool.default_queue_name = default_queue_name
         await pool.ping()
 
     except (ConnectionError, OSError, RedisError, asyncio.TimeoutError) as e:
@@ -145,10 +140,45 @@ async def create_pool(
 
     # recursively attempt to create the pool outside the except block to avoid
     # "During handling of the above exception..." madness
-    return await create_pool(
+    return await create_pool_ping(
         settings,
         retry=retry + 1,
-        # job_serializer=job_serializer,
-        # job_deserializer=job_deserializer,
-        # default_queue_name=default_queue_name,
     )
+
+
+def create_pool(
+    settings_: RedisSettings = None,
+    *,
+    retry: int = 0,
+) -> Redis:
+    """
+    Create a new redis pool, retrying up to ``conn_retries`` times if the connection fails.
+    Returns a :class:`arq.connections.ArqRedis` instance, thus allowing job enqueuing.
+    """
+    settings: RedisSettings = RedisSettings() if settings_ is None else settings_
+
+    assert not (
+        type(settings.host) is str and settings.sentinel
+    ), "str provided for 'host' but 'sentinel' is true; list of sentinels expected"
+
+    if settings.sentinel:
+
+        def pool_factory(*args: Any, **kwargs: Any) -> Redis:
+            client = Sentinel(*args, sentinels=settings.host,
+                              ssl=settings.ssl, **kwargs)
+            return client.master_for(settings.sentinel_master)
+
+    else:
+        pool_factory = functools.partial(
+            Redis,
+            host=settings.host,
+            port=settings.port,
+            socket_connect_timeout=settings.conn_timeout,
+            ssl=settings.ssl,
+            decode_responses=settings.decode_responses,
+        )
+
+    pool = pool_factory(
+        db=settings.database, username=settings.username, password=settings.password, encoding='utf8'
+    )
+    return pool

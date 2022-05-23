@@ -1,7 +1,7 @@
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from dataclasses import dataclass
 import orjson
 from pydantic import BaseModel
 
@@ -24,6 +24,9 @@ class Prefixes(Enum):
     queue_workers = "sq:q:workers::"
     queues_list = "sq:q:queues"
     queues_commands = "sq:q:cmd::"
+    scheduler_lock = "sq:sch:lock::"
+    scheduler_jobs = "sq:sch:jobs::"
+    schedule_job_repeat = "sq:sch:repeat::"
     worker = "sq:w::"
     workers_list = "sq:workers"
 
@@ -33,9 +36,10 @@ class JobStatus(Enum):
     created = 0
     queued = 1
     running = 2
-    canceled = 3
-    failed = 4
-    complete = 5
+    retrying = 3
+    canceled = 4
+    failed = 5
+    complete = 6
 
 
 class JobResult(BaseModel):
@@ -53,6 +57,22 @@ class JobResult(BaseModel):
         json_dumps = orjson_dumps
 
 
+class JobGenericFail(BaseModel):
+    execid: str
+    error: str
+
+    class Config:
+        json_loads = orjson.loads
+        json_dumps = orjson_dumps
+
+
+class JobSchedule(BaseModel):
+    interval: Optional[int] = None
+    cron: Optional[str] = None
+    repeat: Optional[int] = None
+    start_now: bool = False
+
+
 class JobPayload(BaseModel):
     func_name: str
     timeout: int
@@ -61,11 +81,13 @@ class JobPayload(BaseModel):
     result_ttl: int = 60 * 5
     status: int
     queue: str
-    enqueued_ts: float
+    created_ts: int
     max_retry: int = 3
     retries: int = 0
+    job_id: Optional[str] = None
     started_ts: Optional[float] = None
     job_result: Optional[JobResult] = None
+    schedule: Optional[JobSchedule] = None
 
     class Config:
         json_loads = orjson.loads
@@ -80,10 +102,12 @@ class JobRef(BaseModel):
 class WorkerInfo(BaseModel):
     id: str
     birthday: str
+    last_job: str
     queues: List[str]
     completed: int
     failed: int
     running: int
+    tasks_names: List[str]
 
 
 class Command(BaseModel):
