@@ -381,7 +381,7 @@ class AsyncWorker:
         logger.error(f"Job {execid} failed in queue {qname}")
         self._failed += 1
         await self.conn.hset(f"{types.Prefixes.queue_failed.value}{qname}",
-                             mapping={execid})
+                             mapping={execid: data})
         await self.unlock_job(execid)
 
     async def _set_job_completed(self, execid: str, *,  qname: str):
@@ -425,7 +425,7 @@ class AsyncWorker:
         except asyncio.CancelledError:
             pass
         await self.conn.close(close_connection_pool=True)
-        logger.debug("Closed %s", self.id)
+        logger.info("Closed %s", self.id)
 
     def handle_sig(self, signum: Signals) -> None:
         sig = Signals(signum)

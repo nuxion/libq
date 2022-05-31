@@ -59,6 +59,7 @@ class Queue:
                       timeout=None,
                       result_ttl=60 * 5,
                       background=False,
+                      max_retry=3,
                       ) -> Job:
         """
         Create and enqueue a job into this queue.
@@ -90,6 +91,7 @@ class Queue:
             result_ttl=result_ttl,
             status=status,
             created_ts=_now,
+            max_retry=max_retry,
             queue=self._name
         )
         await self.send_job(execid, payload=payload)
