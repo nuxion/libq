@@ -40,27 +40,41 @@ class Queue:
         _prefix = Prefixes.queue_jobs.value
         return f"{_prefix}{self._name}"
 
-    async def send_job(self, id: str, *, payload: JobPayload):
+    async def send_job(self, execid: str, *, payload: JobPayload):
         """ Send job payload to redis """
         data = serializers.job_serializer(payload)
         async with self.conn.pipeline() as pipe:
             pipe.sadd(Prefixes.queues_list.value, self.name)
-            pipe.setex(f"{Prefixes.job.value}{id}",
+            pipe.setex(f"{Prefixes.job.value}{execid}",
                        self._queue_wait_ttl, data)
-            pipe.rpush(self.name, id)
+            pipe.rpush(self.name, execid)
             result = await pipe.execute()
         return result
 
     async def enqueue(self,
-                      func_name, *,
+                      func_name: str, *,
                       jobid=None,
+                      execid=None,
                       params: Dict[str, Any] = {},
                       timeout=None,
                       result_ttl=60 * 5,
                       background=False,
-                      execid=None) -> Job:
+                      ) -> Job:
+        """
+        Create and enqueue a job into this queue.
 
-        id = execid or generate_random()
+        :param func_name: the complete path to the function to be used as string
+        :param jobid: an ID to identify this job, this id doesn't will be used
+        for executions, only as an Identifier.
+        :param execid: This id will be used for execution.
+        :param params: The params that should be serialized to the job.
+        :param timeout: a timeout value to do the job
+        :param result_ttl: How much time store the result
+        :param background: if True the task will run in multiprocessing pool
+        in background.
+        """
+
+        execid = execid or generate_random()
         ts = parse_timeout(timeout) or self._default_timeout
 
         _now = int(now_secs())
@@ -69,6 +83,7 @@ class Queue:
         payload = JobPayload(
             func_name=func_name,
             jobid=jobid,
+            execid=execid,
             timeout=ts,
             background=background,
             params=params,
@@ -77,9 +92,9 @@ class Queue:
             created_ts=_now,
             queue=self._name
         )
-        await self.send_job(id, payload=payload)
+        await self.send_job(execid, payload=payload)
 
-        return Job(id, conn=self.conn, payload=payload)
+        return Job(execid, conn=self.conn, payload=payload)
 
     async def list_enqueued(self, start="0", end="-1") -> List[str]:
         return await self.conn.lrange(self.name, start, end)

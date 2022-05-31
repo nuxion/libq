@@ -13,8 +13,8 @@ from libq.utils import now_secs, poll
 
 class Job:
 
-    def __init__(self, id: str, *, conn: Redis, payload=None):
-        self._id = id
+    def __init__(self, execid: str, *, conn: Redis, payload=None):
+        self._id = execid
         self.conn = conn
         self._status: int = JobStatus.not_found.value
         if payload:
@@ -155,6 +155,7 @@ class Job:
                        interval=None,
                        cron=None,
                        repeat=None,
+                       jobid=None,
                        ) -> JobPayload:
         _params = params or {}
         created_ts = int(now_secs())
@@ -167,6 +168,7 @@ class Job:
 
         job = JobPayload(
             func_name=func_name,
+            jobid=jobid,
             params=_params,
             queue=queue,
             status=status,

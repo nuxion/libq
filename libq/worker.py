@@ -201,8 +201,8 @@ class AsyncWorker:
     async def main(self):
 
         self.sub = self.conn.pubsub()
-        logger.info(f"Starting worker {self.id}")
-        logger.info(f"Queues to listen {self.queues}")
+        logger.info(f"Starting worker as {self.id}")
+        logger.info(f"Queues to listen {self._queues}")
         self.create_task("heartbeat", self.heartbeat())
         self.create_task("commands", self.commands())
         if self.scheduler:
@@ -234,17 +234,17 @@ class AsyncWorker:
 
         if task:
             _queue = task[0]
-            _job = task[1]
+            _execid = task[1]
             self.last_job = now_iso()
-            await self.start_job(_job, _queue)
+            await self.start_job(_execid, _queue)
         else:
             logger.debug("No jobs found")
             last = elapsed_from(self.last_job)
             self.idle_secs += last
 
-        for job_id, t in list(self.tasks.items()):
+        for exec_id, t in list(self.tasks.items()):
             if t.done():
-                del self.tasks[job_id]
+                del self.tasks[exec_id]
                 t.result()
 
     async def _poll_iteration(self):
@@ -261,20 +261,20 @@ class AsyncWorker:
             last = elapsed_from(self.last_job)
             self.idle_secs += last
 
-        for job_id, t in list(self.tasks.items()):
+        for exec_id, t in list(self.tasks.items()):
             if t.done():
-                del self.tasks[job_id]
+                del self.tasks[exec_id]
                 t.result()
 
-    def _in_progress_key(self, job_id: str) -> str:
-        return types.Prefixes.job_in_progress.value + job_id
+    def _in_progress_key(self, execid: str) -> str:
+        return types.Prefixes.job_in_progress.value + execid
 
-    async def unlock_job(self, job_id):
-        in_progress_key = types.Prefixes.job_in_progress.value + job_id
+    async def unlock_job(self, execid):
+        in_progress_key = types.Prefixes.job_in_progress.value + execid
         await self.conn.delete(in_progress_key)
 
-    async def start_job(self, job_id: str, qname: str):
-        in_progress_key = self._in_progress_key(job_id)
+    async def start_job(self, execid: str, qname: str):
+        in_progress_key = self._in_progress_key(execid)
         await self.sem.acquire()
         async with self.conn.pipeline(transaction=True) as pipe:
             await pipe.watch(in_progress_key)
@@ -282,7 +282,7 @@ class AsyncWorker:
             if ongoing_exists:
                 self.sem.release()
                 logger.debug(
-                    "job %s already running elsewhere", job_id)
+                    "job %s already running elsewhere", execid)
             else:
                 pipe.multi()
                 # pipe.setex(in_progress_key, int(10)) # secs
@@ -292,15 +292,15 @@ class AsyncWorker:
                 except (ResponseError, WatchError):
                     self.sem.release()
                 else:
-                    t = self.loop.create_task(self.run_job(job_id, qname))
+                    t = self.loop.create_task(self.run_job(execid, qname))
                     t.add_done_callback(lambda _: self.sem.release())
                     # t.add_done_callback(self.)
-                    self.tasks[job_id] = t
+                    self.tasks[execid] = t
 
-    async def start_jobs(self, job_ids: List[str], qname: str):
+    async def start_jobs(self, exec_ids: List[str], qname: str):
         await asyncio.gather(
-            [self.start_job(jid, qname)
-             for jid in job_ids],
+            [self.start_job(execid, qname)
+             for execid in exec_ids],
             return_exceptions=True
         )
 
@@ -342,11 +342,11 @@ class AsyncWorker:
 
         return result
 
-    async def run_job(self, job_id: str, qname: str):
+    async def run_job(self, execid: str, qname: str):
         start_ms = now_secs()
-        logger.info("Running jobid %s from queue %s", job_id, qname)
+        logger.info("Running job %s from queue %s", execid, qname)
         try:
-            job = Job(job_id, conn=self.conn)
+            job = Job(execid, conn=self.conn)
             payload = await job.fetch()
             await job.mark_running()
             payload.started_ts = start_ms
@@ -356,44 +356,43 @@ class AsyncWorker:
                 result = await self.call_func(payload)
             if not result.error:
                 await job.mark_complete(result.func_result)
-                await self._set_job_completed(job_id, qname=payload.queue)
+                await self._set_job_completed(execid, qname=payload.queue)
             else:
                 rsp = await job.mark_retry()
                 if rsp:
-                    await self._set_retry_job(job_id, qname=payload.queue)
+                    await self._set_retry_job(execid, qname=payload.queue)
                 else:
                     await job.mark_failed(asdict(result))
-                    await self._set_job_failed(job_id, qname=payload.queue,
+                    await self._set_job_failed(execid, qname=payload.queue,
                                                payload=payload)
 
         except Exception as e:
             # last catch if something fails
-            payload = types.JobGenericFail(execid=job_id, error=str(e))
+            payload = types.JobGenericFail(execid=execid, error=str(e))
 
-            await self._set_job_failed(job_id, qname=qname, payload=payload)
+            await self._set_job_failed(execid, qname=qname, payload=payload)
 
-
-    async def _set_job_failed(self, job_id: str, *,
+    async def _set_job_failed(self, execid: str, *,
                               qname: str,
                               payload: Union[types.JobPayload, types.JobGenericFail]):
 
         data = payload.json()
 
-        logger.error(f"Job {job_id} failed in queue {qname}")
+        logger.error(f"Job {execid} failed in queue {qname}")
         self._failed += 1
         await self.conn.hset(f"{types.Prefixes.queue_failed.value}{qname}",
-                             mapping={job_id: data})
-        await self.unlock_job(job_id)
+                             mapping={execid})
+        await self.unlock_job(execid)
 
-    async def _set_job_completed(self, job_id: str, *,  qname: str):
-        logger.info(f"Completed {job_id} in queue {qname}")
+    async def _set_job_completed(self, execid: str, *,  qname: str):
+        logger.info(f"Completed {execid} in queue {qname}")
         self._completed += 1
-        await self.unlock_job(job_id)
+        await self.unlock_job(execid)
 
-    async def _set_retry_job(self, job_id: str, *, qname: str):
-        await self.unlock_job(job_id)
+    async def _set_retry_job(self, execid: str, *, qname: str):
+        await self.unlock_job(execid)
         queue = f"{types.Prefixes.queue_jobs.value}{qname}"
-        await self.conn.lpush(queue, job_id)
+        await self.conn.lpush(queue, execid)
 
     def run(self):
         """

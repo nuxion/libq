@@ -84,7 +84,8 @@ class JobPayload(BaseModel):
     created_ts: int
     max_retry: int = 3
     retries: int = 0
-    job_id: Optional[str] = None
+    jobid: Optional[str] = None
+    execid: Optional[str] = None
     started_ts: Optional[float] = None
     job_result: Optional[JobResult] = None
     schedule: Optional[JobSchedule] = None

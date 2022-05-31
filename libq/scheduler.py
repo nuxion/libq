@@ -122,7 +122,7 @@ class Scheduler:
 
         payload = types.JobPayload(
             func_name=func_name,
-            job_id=_jobid,
+            jobid=_jobid,
             timeout=ts,
             background=background,
             params=params,
@@ -155,9 +155,9 @@ class Scheduler:
     async def enqueue_job(self, jobid: str) -> bool:
         """
         Put the jobid into a sorted set.
-        For now it uses the original jobid to enqueue the task
-        this implies that if the same job is already running it will not
-        be scheduled.
+        It creates a new id for each execution of a job
+        this implies that eventually if a job instances take more time than
+        the next run, they will run together.
         """
         try:
             job = await self.store.get(jobid=jobid)
@@ -169,21 +169,19 @@ class Scheduler:
         schedule: types.JobSchedule = job.schedule
         if schedule:
             do_the_job = await self._check_repeat(jobid, schedule.repeat)
-            if schedule.interval and do_the_job:
+            if do_the_job:
                 q = Queue(job.queue, conn=self.conn)
-                # execid = generate_random()
-                logger.info(f"SCHEDULER: Enqueing job {jobid}")
-                await q.send_job(jobid, payload=job)
-                next_run = now_dt() + timedelta(seconds=job.schedule.interval)
-                await self.conn.zadd(self.jobs_key, {jobid: to_unix(next_run)})
-            elif schedule.cron and do_the_job:
-                q = Queue(job.queue, conn=self.conn)
-                # execid = generate_random()
-                logger.info(f"SCHEDULER: Enqueing job {jobid}")
-                await q.send_job(jobid, payload=job)
-                iter_ = croniter(schedule.cron, now_dt())
-                next_run = iter_.get_next()
-                await self.conn.zadd(self.jobs_key, {jobid: next_run})
+                execid = generate_random()
+                logger.info(
+                    f"SCHEDULER: Enqueing job {jobid} with execid: {execid}")
+                await q.send_job(execid, payload=job)
+                if schedule.interval:
+                    next_run = now_dt() + timedelta(seconds=job.schedule.interval)
+                    await self.conn.zadd(self.jobs_key, {jobid: to_unix(next_run)})
+                elif schedule.cron:
+                    iter_ = croniter(schedule.cron, now_dt())
+                    next_run = iter_.get_next()
+                    await self.conn.zadd(self.jobs_key, {jobid: next_run})
 
             else:
                 await self.unregister_job(jobid)
