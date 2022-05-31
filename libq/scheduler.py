@@ -1,17 +1,17 @@
 import asyncio
 from datetime import timedelta
 from time import time
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from croniter import croniter
 from redis.asyncio import ConnectionPool
 
-from libq import defaults, types
+from libq import defaults, errors, types
 from libq.base import JobStoreSpec
 from libq.connections import create_pool
 from libq.logs import logger
 from libq.queue import Queue
-from libq.utils import generate_random, now_dt, poll, to_unix
+from libq.utils import generate_random, now_dt, now_secs, parse_timeout, poll, to_unix
 
 
 class Scheduler:
@@ -85,54 +85,120 @@ class Scheduler:
 
         return results
 
+    async def create_job(self, func_name, *,
+                         queue: str,
+                         jobid=None,
+                         params: Dict[str, Any] = {},
+                         timeout=None,
+                         result_ttl=60 * 5,
+                         background=False,
+                         interval=None,
+                         cron=None,
+                         repeat=3
+                         ) -> types.JobPayload:
+        """
+        It creates and register a JobPayload into the jobstore
+        It has a interface similar to enqueue method of Queue.
+        """
+        ts = parse_timeout(timeout)
+        ts = ts or defaults.JOB_TIMEOUT
+
+        job_schedule = None
+        if interval:
+            job_schedule = types.JobSchedule(
+                interval=parse_timeout(interval),
+                repeat=repeat
+            )
+        elif cron:
+            job_schedule = types.JobSchedule(
+                cron=parse_timeout(interval),
+                repeat=repeat
+            )
+
+        _jobid = jobid or generate_random()
+
+        _now = int(now_secs())
+        status = types.JobStatus.created.value
+
+        payload = types.JobPayload(
+            func_name=func_name,
+            job_id=_jobid,
+            timeout=ts,
+            background=background,
+            params=params,
+            result_ttl=result_ttl,
+            status=status,
+            created_ts=_now,
+            queue=queue,
+            schedule=job_schedule,
+        )
+        await self.store.put(_jobid, payload)
+        return payload
+
     async def remove_job(self, jobid: str):
+        """
+        it removes a job from the store and from the scheduler
+        """
+        await self.unregister_job(jobid)
+        await self.store.delete(jobid)
+
+    async def unregister_job(self, jobid: str):
+        """ Its unregister a job from the scheduler """
+
         repeat_key = self.get_repeat_key(jobid)
         async with self.conn.pipeline() as pipe:
             pipe.delete(repeat_key)
             pipe.zrem(self.jobs_key, jobid)
             await pipe.execute()
+        logger.debug(f"SCHEDULER: Jobid {jobid} removed")
 
-    async def enqueue_job(self, jobid: str):
+    async def enqueue_job(self, jobid: str) -> bool:
         """
         Put the jobid into a sorted set.
         For now it uses the original jobid to enqueue the task
         this implies that if the same job is already running it will not
         be scheduled.
         """
-        job = await self.store.get(jobid=jobid)
+        try:
+            job = await self.store.get(jobid=jobid)
+        except (errors.JobNotFound, errors.JobDecodingError) as e:
+            msg = f"Jobid {jobid} error with {e}"
+            logger.error(msg)
+            await self.remove_job(jobid)
+            return False
         schedule: types.JobSchedule = job.schedule
         if schedule:
             do_the_job = await self._check_repeat(jobid, schedule.repeat)
             if schedule.interval and do_the_job:
                 q = Queue(job.queue, conn=self.conn)
                 # execid = generate_random()
-                logger.info(f"Enqueing job {jobid}")
+                logger.info(f"SCHEDULER: Enqueing job {jobid}")
                 await q.send_job(jobid, payload=job)
                 next_run = now_dt() + timedelta(seconds=job.schedule.interval)
                 await self.conn.zadd(self.jobs_key, {jobid: to_unix(next_run)})
             elif schedule.cron and do_the_job:
                 q = Queue(job.queue, conn=self.conn)
                 # execid = generate_random()
-                logger.info(f"Enqueing job {jobid}")
+                logger.info(f"SCHEDULER: Enqueing job {jobid}")
                 await q.send_job(jobid, payload=job)
                 iter_ = croniter(schedule.cron, now_dt())
                 next_run = iter_.get_next()
                 await self.conn.zadd(self.jobs_key, {jobid: next_run})
 
             else:
-                await self.remove_job(jobid)
-                logger.info(f"Jobid {jobid} removed")
+                await self.unregister_job(jobid)
         else:
-            await self.remove_job(jobid)
-            logger.info(f"Jobid {jobid} removed")
+            await self.unregister_job(jobid)
+        return True
 
     async def get_enqueued(self):
         return await self.conn.zrange(self.jobs_key, 0, -1)
 
     async def run(self):
-        logger.info("Starting scheduler")
+        logger.info("SCHEDULER: Starting")
         # self.main_task = self.loop.create_task(self.main())
         async for _ in poll(self._interval):
+            logger.debug("SCHEDULER: Checking for jobs")
             lock = await self.acquire_lock()
             if lock:
                 jobs_id = await self.get_expired()
@@ -140,4 +206,4 @@ class Scheduler:
                     await self.enqueue_job(j)
                 await self.remove_lock()
             else:
-                logger.debug("Lock already taken - skipping run")
+                logger.debug("SCHEDULER: Lock already taken - skipping run")

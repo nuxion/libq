@@ -1,10 +1,11 @@
+import json
 from pathlib import Path
 from typing import List
 
 import orjson
 from redis.asyncio import ConnectionPool
 
-from libq import types
+from libq import errors, types
 from libq.base import JobStoreSpec
 from libq.connections import create_pool
 
@@ -17,7 +18,13 @@ class RedisJobStore(JobStoreSpec):
 
     async def get(self, jobid: str) -> types.JobPayload:
         data = await self.conn.hget(self.jobs_prefix, jobid)
-        data_dict = orjson.loads(data)
+        if not data:
+            raise errors.JobNotFound(jobid)
+        try:
+            data_dict = orjson.loads(data)
+        except json.JSONDecodeError:
+            raise errors.JobDecodingError(jobid)
+
         return types.JobPayload(**data_dict)
 
     async def put(self, jobid: str, job: types.JobPayload):

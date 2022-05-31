@@ -5,9 +5,10 @@ from typing import Any, Dict
 
 from rich.logging import RichHandler
 
+from libq import RedisJobStore, Scheduler, types
 from libq.worker import AsyncWorker
-from libq.scheduler import Scheduler
-from libq.job_store import RedisJobStore
+
+# from libq.job_store import RedisJobStore
 
 LOG_CONFIG: Dict[str, Any] = dict(  # no cov
     version=1,
@@ -39,16 +40,29 @@ LOG_CONFIG: Dict[str, Any] = dict(  # no cov
 )
 
 
-logging.config.dictConfig(LOG_CONFIG)
-# log = logging.getLogger("streamq.worker")
-# log.info("[magenta]Hello[/]", extra={"markup": True})
-try:
-    queues = sys.argv[1]
-except IndexError:
-    queues = "default"
-# queues = _queues.split(",")
+async def create_dummy_job(scheduler: Scheduler, qname="default") -> types.JobPayload:
 
-store = RedisJobStore()
-scheduler = Scheduler(store)
-worker = AsyncWorker(queues=queues, scheduler=scheduler)
-worker.run()
+    job = await scheduler.create_job(
+        "examples.hello.hello_world",
+        queue=qname,
+        params={"timeout": 1, "error": False},
+        interval="30s",
+    )
+    return job
+
+
+if __name__ == "__main__":
+    logging.config.dictConfig(LOG_CONFIG)
+    # log = logging.getLogger("streamq.worker")
+    # log.info("[magenta]Hello[/]", extra={"markup": True})
+    try:
+        queues = sys.argv[1]
+    except IndexError:
+        queues = "default"
+    # queues = _queues.split(",")
+
+    store = RedisJobStore()
+    scheduler = Scheduler(store)
+
+    worker = AsyncWorker(queues=queues, scheduler=scheduler)
+    worker.run()

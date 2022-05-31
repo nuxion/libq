@@ -6,7 +6,12 @@ class TimeoutFormatError(Exception):
 
 class JobNotFound(Exception):
     def __init__(self, execid):
-        msg = f"Execid {execid} not found"
+        msg = f"id {execid} not found"
+        super().__init__(msg)
+
+class JobDecodingError(Exception):
+    def __init__(self, id):
+        msg = f"error decoding {id}"
         super().__init__(msg)
 
 

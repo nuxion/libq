@@ -344,15 +344,12 @@ class AsyncWorker:
 
     async def run_job(self, job_id: str, qname: str):
         start_ms = now_secs()
-        logger.debug("Getting jobid %s", job_id)
+        logger.info("Running jobid %s from queue %s", job_id, qname)
         try:
             job = Job(job_id, conn=self.conn)
             payload = await job.fetch()
             await job.mark_running()
             payload.started_ts = start_ms
-            logger.debug(
-                f"Doing {job_id}/{payload.func_name} "
-                f"from queue {payload.queue}")
             if payload.background:
                 result = await self.call_func_bg(payload)
             else:
@@ -368,11 +365,13 @@ class AsyncWorker:
                     await job.mark_failed(asdict(result))
                     await self._set_job_failed(job_id, qname=payload.queue,
                                                payload=payload)
+
         except Exception as e:
             # last catch if something fails
             payload = types.JobGenericFail(execid=job_id, error=str(e))
 
             await self._set_job_failed(job_id, qname=qname, payload=payload)
+
 
     async def _set_job_failed(self, job_id: str, *,
                               qname: str,
@@ -387,7 +386,7 @@ class AsyncWorker:
         await self.unlock_job(job_id)
 
     async def _set_job_completed(self, job_id: str, *,  qname: str):
-        logger.debug(f"Completed {job_id} in queue {qname}")
+        logger.info(f"Completed {job_id} in queue {qname}")
         self._completed += 1
         await self.unlock_job(job_id)
 
@@ -439,7 +438,7 @@ class AsyncWorker:
         #     self.jobs_retried,
         #     len(self.tasks),
         # )
-        logger.info("Shuting down worker %s", self.id)
+        logger.info("Shutting down worker %s", self.id)
         logger.debug(f"Pending jobs {self.tasks.values()}")
         for t in self.tasks.values():
             if not t.done():
