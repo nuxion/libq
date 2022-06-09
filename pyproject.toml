@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "libq"
-version = "0.7.1"
+version = "0.7.2"
 description = "Simple async and sync queue system"
 authors = ["nuxion <nuxion@gmail.com>"]
 homepage = "https://github.com/nuxion/libq"
@@ -8,7 +8,7 @@ repository = "https://github.com/nuxion/libq"
 keywords = ["queue", "redis", "async", "distributed"]
 
 [tool.poetry.dependencies]
-python = ">=3.8,<3.11"
+python = ">=3.7,<3.11"
 redis = "^4.3.1"
 hiredis = "^2.0.0"
 pydantic = "^1.9.0"
