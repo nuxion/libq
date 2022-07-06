@@ -76,7 +76,7 @@ class Job:
         status = self.status
 
         now = datetime.utcnow().timestamp()
-        elapsed = self._payload.started_ts - now
+        elapsed = now - self._payload.started_ts
         job_res = JobResult(
             execid=self._id,
             func_name=self._payload.func_name,
@@ -96,7 +96,7 @@ class Job:
     async def mark_failed(self, error=None):
         self.status = JobStatus.failed.value
         now = datetime.utcnow().timestamp()
-        elapsed = self._payload.started_ts - now
+        elapsed = now - self._payload.started_ts
 
         job_res = JobResult(
             execid=self._id,
