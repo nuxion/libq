@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "libq"
-version = "0.7.3"
+version = "0.7.4"
 description = "Simple async and sync queue system"
 authors = ["nuxion <nuxion@gmail.com>"]
 homepage = "https://github.com/nuxion/libq"

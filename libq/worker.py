@@ -2,6 +2,7 @@ import asyncio
 import concurrent.futures
 import random
 import signal
+import traceback
 from copy import deepcopy
 from dataclasses import asdict
 from functools import partial
@@ -317,8 +318,11 @@ class AsyncWorker:
             _result = await asyncio.wait_for(func(**payload.params), payload.timeout)
             result.func_result = _result
         except (Exception, asyncio.CancelledError) as e:
+            err = traceback.format_exc()
+            logger.exception(err)
             result.error = True
-            result.error_msg = f"func {payload.func_name} failed or timeouted with {e}"
+            # result.error_msg = f"func {payload.func_name} failed or timeouted with {e}"
+            result.error_msg = err
 
         return result
 
@@ -337,8 +341,11 @@ class AsyncWorker:
                     pool, partial(func, **payload.params)), payload.timeout)
                 result.func_result = _result
             except (Exception, asyncio.CancelledError) as e:
+                err = traceback.format_exc()
+                logger.exception(err)
                 result.error = True
-                result.error_msg = f"func {payload.func_name} failed or timeouted with {e}"
+                result.error_msg = err
+                # result.error_msg = f"func {payload.func_name} failed or timeouted with {e}"
 
         return result
 
